@@ -1,0 +1,642 @@
+#!/bin/bash
+
+
+function check_commands()
+{
+	local command
+	local ERR=0
+	for command in $@; do
+		[ "$(which $command 2> /dev/null)" = "" ] && prompt_echo "$command is not available for $PROGNAME" 
+	done
+	[ $ERR -gt 0 ] && exit 1
+}
+
+function cache_commands()
+{
+	local command
+	mkdir -p $CACHE_CMD
+	for command in $@; do
+		cp -f $(which $command) $CACHE_CMD
+	done
+
+}
+
+function yes_or_no()
+{
+    local prompts="$1"
+    local default="$2"
+    local timeout="$3"
+    local result='?'
+
+    while [ $result != "Y" ] && [ $result != "N" ]; do
+        read -n1 -t $timeout -p "$prompts" result
+        [ -z $result ] && result=$default
+        result=$(echo $result|tr 'a-z' 'A-Z')
+        echo
+    done
+    [[ "$result" == "Y" ]] && return 1
+    [[ "$result" == "N" ]] && return 0
+}
+
+function help_usage(){
+cat <<EOF
+YUM for cygwin is a shell script helping cygwin user to install/update/search 
+packages of cygwin in the manners of similar to redhat yum functions. 
+
+Usage: $PROGNAME [COMMAND] [OPTION] [PARAMETERS]
+
+Commands:
+  check-updates       List all possible updates of installed package(s)
+                      for cygwin as of now.
+  clean               Clean all cache files and refresh them with latest 
+                      data.
+  
+  info [pkgs..]       Display the briefing information of the given package(s)
+  info installed      Display the briefing information of installed package(s)
+  info updates        Display the briefing information of updating package(s)
+
+  install [pkgs..]    Install the given package(s) with required package(s)
+  
+  list [pkgs..]       List the detail information of the given package(s)
+  list installed      List the detail information of the installed package(s) 
+  list updates        List the detail information of the updating package(s)
+  
+  remove [pkgs..]     Remove the installed package(s) given by user as well
+                      as the orphan package(s) relatives.
+                      
+  search key-word     Search the package database for any package(s) relevant 
+                      the given keyword.
+  
+  update [pkgs..]     Update all packages or the package(s) given by user.
+  
+  full-cache          Retrive all information from cygwin in cache, it takes
+                      long time to complete while internet connection is slow.                
+ 
+Options:                     
+  -y, --yes    Always say yes to queries
+  -h, --help   Show current help message of the script usages
+  
+Please Report Script Bugs to $AUTHOR_MAIL
+
+
+EOF
+exit 1
+}
+
+function error_exit()
+{
+	echo "$@" 1>&2
+	exit
+}
+
+function prompt_echo()
+{
+	echo "$@" 1>&2
+}
+
+function get_mirror_site()
+{
+	curl -s -o $CACHE_DIR/mirrors.lst http://cygwin.com/mirrors.lst
+#	MIRRORS=($(curl -s http://cygwin.com/mirrors.html|grep -o -E 'href="([^"#]+)/cygwin/"' |awk -F"\"" '{print $2}'|grep -v "http://www.redhat.com/"|grep -v "rsync://"))
+	MIRROR="http://mirrors.163.com/cygwin/"
+}
+
+function check_md5()
+{
+	local remote_md5="$(curl -s "$(dirname $2)/md5.sum"|grep -E " $(basename $2)$"|awk '{print $1}')"
+	local local_md5="$(md5sum $1|awk '{print $1}')"
+	[ "$local_md5" == "$remote_md5" ] && return 0 || return 1
+}
+
+
+function refresh_setup_ini()
+{
+	prompt_echo "Refreshing setup.ini from [$(echo $MIRROR|awk -F"/" '{print $3}')] via Protocol [$(echo $MIRROR|awk -F":" '{print $1}')]..."
+	cp -f $SETUP_INI "$SETUP_INI.last" &>/dev/null
+	touch $SETUP_INI "$SETUP_INI.last"
+	curl -# -o $SETUP_INI "$MIRROR$ARCH/setup.ini" || error_exit "Curl Download Error with Error Code [$?]!"
+	check_md5 $SETUP_INI "$MIRROR$ARCH/setup.ini" || error_exit "Curl Download MD5 not Matching!"
+	SETUP_VER="$(awk '/setup-version:/{print$2;exit}' "$SETUP_INI")"
+	SETUP_TIMESTAMP="$(awk '/setup-timestamp:/{print$2;exit}' "$SETUP_INI")"
+}
+
+function refresh_setup_db()
+{
+	local force=$#
+	[[ "$SETUP_TIMESTAMP" == "$LAST_TIMESTAMP" && "$SETUP_VER" == "$LAST_VER" && $force -eq 0 ]] && return
+	awk -F"|" '$3!=""{printf "%s|%s\n",$1,$13}' $SETUP_DB >$CACHE_DIR/tmp.db
+	awk '
+	/^@/{if (p>0) {for(i=p;i<13;i++) printf"|";printf "\n"};p=1;printf "%s",$2}
+	/^\[prev\]$/ || /^\[test\]$/{if (p>0) {for(i=p;i<13;i++) printf"|";printf "\n"};p=0}
+	/^sdesc:/{for(i=p;i<2;i++) printf"|";p=2;gsub(/^sdesc: /,"");gsub("\"","");printf "%s",$0}
+	/^ldesc:/{for(i=p;i<3;i++) printf"|";p=3;gsub(/^ldesc: /,"");c=$0;l="";do {l=l""c" ";getline c} while (index(c,":")==0);gsub(/"/,"",l);printf"%s",l;$0=c}
+	/^category:/{for(i=p;i<4;i++) printf"|";p=4;gsub(/^category: /,"");printf "%s",$0}
+	/^requires:/{for(i=p;i<5;i++) printf"|";p=5;gsub(/^requires: /,"");printf "%s",$0}
+	/^version:/{if (p>0){for(i=p;i<6;i++) printf"|";p=6;gsub(/^version: /,"");printf "%s",$0}}
+	/^install:/{if (p>0){for(i=p;i<7;i++) printf"|";p=9;gsub(/^install: /,"");gsub(" ","|");printf "%s",$0}}
+	/^source:/{if (p>0){for(i=p;i<10;i++) printf"|";p=13;gsub(/^source: /,"");gsub(" ","|");printf "%s|",$0}}' $SETUP_INI|grep -v -E "^$" >$SETUP_DB
+	cp -f $SETUP_DB ${SETUP_DB}-save
+	awk -F"|" 'NR==FNR{a[$1]=$2}NR>FNR{printf "%s",$0;if ($1 in a) printf"%s",a[$1];printf"\n"}' $CACHE_DIR/tmp.db "${SETUP_DB}-save" >$SETUP_DB
+	rm -f $CACHE_DIR/tmp.db
+
+}
+
+function refresh_update_db()
+{
+	local force=$#
+	[[ "$SETUP_TIMESTAMP" == "$LAST_TIMESTAMP" && "$SETUP_VER" == "$LAST_VER" && $force -eq 0 ]] && return
+	awk 'NR==FNR && NR>1{p[$1]=$2}NR>FNR{FS="|";if ($1 in p) {p[$1]=substr(p[$1],length($1)+1);gsub(/.tar.bz2$/,"",p[$1]);gsub(/^\-/,"",p[$1]);if ($6!=p[$1]) printf "%s|%s|%s\n",$1,p[$1],$6}}' $INSTALLED_DB $SETUP_DB > $UPDATE_DB
+}
+
+function check_yes()
+{
+	[ $YES -eq 0 ] && YES=1 && return
+	prompt_echo "$PROGNAME: error - duplicated switch '-y' found!"
+	help_usage;
+	exit 1	
+}
+
+function check_command()
+{
+	[ "$COMMAND" == "" ] && COMMAND=$1 && return
+	prompt_echo "$PROGNAME: error - duplicated command '$1' found!"
+	help_usage;
+	exit 1
+}
+
+function get_parameters()
+{
+	local param=""
+	PARAMS=()
+	for param in $@; do 
+		[[ "$param" =~ ^- ]] && return
+		for item in ${COMMANDS[@]}; do [ "$param" == "$item" ] && return; done
+		PARAMS=("${PARAMS[@]}" "$param")
+	done
+}
+
+function info_options()
+{
+	local opt="$1"
+	local opts=(installed updates)
+	local item
+	OPTION=""
+	for item in ${opts[@]}; do [ "$opt" == "$item" ] && OPTION=$opt;done
+}
+
+function install_options()
+{
+	local opt="$1"
+	local opts=(withupdates)
+	local item
+	OPTION=""
+	for item in ${opts[@]}; do [ "$opt" == "$item" ] && OPTION=$opt;done
+}
+
+function search_options()
+{
+	local opt="$1"
+	local opts=(requires)
+	local item
+	OPTION=""
+	for item in ${opts[@]}; do [ "$opt" == "$item" ] && OPTION=$opt;done
+}
+
+function list_options()
+{
+	local opt="$1"
+	local opts=(installed updates)
+	local item
+	OPTION=""
+	for item in ${opts[@]}; do [ "$opt" == "$item" ] && OPTION=$opt;done
+}
+
+function run_check_update()
+{
+	info_items "$(find_updates)"
+	prompt_echo "Found $(cat $UPDATE_DB|wc -l) Updates!"
+	return
+}
+
+function info_items()
+{
+	local pkgs=" $@ "
+	echo "Package Name             Description                        Version     Size"
+	echo "------------------------ ---------------------------------- ----------- -------"
+	awk -F"|" -v t="$pkgs" 'BEGIN{split("BKMGTP",h,"")}function hn(n,i){while(++i && n>=1000 && i<=length(h)) n/=1024;return sprintf("%3.2f%s",n,h[i])}{if (match(t," "$1" ") || t==""){$1=(length($1)>24)?substr($1,1,22)">>":$1;$2=(length($2)>34)?substr($2,1,32)">>":$2;$6=(length($6)>11)?substr($6,1,9)">>":$6;printf "%-24s %-34s %-11s %7s\n",$1,$2,$6,hn($8)}}' $SETUP_DB
+	echo "-------------------------------------------------------------------------------"
+}
+
+function list_items()
+{
+	local pkgs=" $@ "
+	awk -F"|" -v t="$pkgs" 'BEGIN{split("BKMGTP",h,"")}
+	function hn(n,i){
+		while(++i && n>=1000 && i<=length(h)) n/=1024;
+		return sprintf("%3.2f%s",n,h[i])
+	}
+	{if (match(t," "$1" ") || t=="  "){
+			for (i=0;i<79;i++) printf "-";printf "\n";
+			printf "%-20s%s\n","Package Name:",$1
+			if ($2!="") printf "%-20s%s\n","Briefing Info:",$2
+			if ($3!=""){
+				d="Description:";n=split($3,a," ");m=80;
+				for (i=1;i<=n;i++){
+					if (m+length(a[i])>58) {if (m<60) printf "\n";printf "%-20s",d;d=" "};
+					m=(m+length(a[i])<59)?m+length(a[i])+1:length(a[i])+1;
+					printf "%s ",a[i];
+				}
+				printf "\n"
+			}
+			if ($6!="") printf "%-20s%s\n","Category:",$4
+			if ($5!=""){
+				d="Required Package(s):";n=split($5,a," ");m=80;
+				for (i=1;i<=n;i++){
+					if (m+length(a[i])>58) {if (m<60) printf "\n";printf "%-20s",d;d=" "};
+					m=(m+length(a[i])<59)?m+length(a[i])+1:length(a[i])+1;
+					printf "%s ",a[i];
+				}
+				printf "\n"
+			}
+			if ($6!="")	printf "%-20s%s\n","Latest Version:",$6
+			if ($7!="")	printf "%-20s%s\n","Binary Package:",$7;
+			if ($8!="")	printf "%-20s%s\n","       Size:",hn($8);
+			if ($9!="")	printf "%-20s%s\n","       MD5:",$9;
+			if ($10!="")printf "%-20s%s\n","Source Package:",$10;
+			if ($11!="")printf "%-20s%s\n","       Size:",hn($11);
+			if ($12!="")printf "%-20s%s\n","       MD5:",$12;
+		}
+	}' $SETUP_DB
+
+	echo "-------------------------------------------------------------------------------"
+}
+
+function run_full_cache()
+{
+    local dir_ifs=$IFS
+    local pkg
+    local url
+    local md5
+    local opt
+    local nbr=$(cat $SETUP_DB|wc -l)
+    local th10=$((nbr/10))
+    local th50=$((nbr/50))
+    local idx=0
+	cp -f "$SETUP_DB" "${SETUP_DB}-save"
+	IFS=$'\n';
+	rm -f $CACHE_DIR/tmp.db
+	prompt_echo "Caching $nbr Package(s)..."
+	for pkg in $(awk -F"|" '{print $1"|"$7"|"$9}' $SETUP_DB); do
+		url=$MIRROR/$(echo $pkg|awk -F"|" '{print $2}');
+		md5=$(echo $pkg|awk -F"|" '{print $3}');
+		pkg=$(echo $pkg|awk -F"|" '{print $1}');
+		if [ $((idx%th10)) -eq 0 ]; then
+			echo -n ">" 1>&2
+		else
+			[ $((idx%th50)) -eq 0 ] && echo -n "." 1>&2
+		fi
+		idx=$((idx+1))
+		curl -s -o $CACHE_DIR/$(basename $url) $url || continue
+		[ "$(md5sum $CACHE_DIR/$(basename $url)|awk '{print $1}')" != "$md5" ] && rm -f $CACHE_DIR/$(basename $url) && continue
+		opt="-tvjf"
+		[[ $url =~ .xz ]] && opt="-tvJf"
+		tar --ignore-failed-read $opt $CACHE_DIR/$(basename $url) 2>/dev/null|awk -v p="$pkg" 'BEGIN{printf "%s|",p}!/\/$/{n=split($0,a,"/");printf "%s ",a[n]}END{printf "\n"}' >>$CACHE_DIR/tmp.db
+		rm -f $CACHE_DIR/$(basename $url)
+	done
+	prompt_echo
+	awk -F"|" 'NR==FNR{a[$1]=$2}NR>FNR{printf "%s",$0;if ($1 in a) printf"%s",a[$1];printf"\n"}' $CACHE_DIR/tmp.db "${SETUP_DB}-save" >$SETUP_DB
+}
+
+function find_required_by()
+{
+	awk -v p="$1" 'NR==FNR{FS="|";if (match(" "$5" "," "p" ")) t[$1]=p}NR>FNR{FS=" ";if ($1 in t) printf "%s ",$1}' $SETUP_DB $INSTALLED_DB
+}
+
+function find_installed()
+{
+	awk 'NR>1{printf "%s ",$1}' $INSTALLED_DB
+}
+
+function find_updates()
+{
+	awk -F"|" '{printf "%s ",$1}' $UPDATE_DB
+}
+
+function find_requires()
+{
+	local requires=()
+	local item=" $@ "
+	local count=0
+	prompt_echo -n "Searching Requires."
+	requires=(${requires[@]} $(awk -F"|" -v t="$item" '{if (match(t," "$1" ")) printf "%s ",$5}' $SETUP_DB))
+	while [ ${#requires[@]} -ne $count ]; do
+		count=${#requires[@]}
+		item=" ${requires[@]} "
+		requires=(${requires[@]} $(awk -F"|" -v t="$item" '{if (match(t," "$1" ")) printf "%s ",$5}' $SETUP_DB))
+		requires=($(echo "${requires[@]}"|awk '{for(i=1;i<=NF;i++) if (!($i in a)) {a[$i]=$i;printf "%s ",$i}}'))
+		prompt_echo -n "."
+	done
+	prompt_echo
+	echo ${requires[@]}
+}
+
+function find_orphans()
+{
+	local pkg="$(find_requires $@)"
+	local requires="$(find_requires $(find_installed))"
+	requires=($(awk -v p="$pkg" -v r="$requires" 'BEGIN{m=split(p,a," ");n=split(r,b," ");for(i=1;i<=m;i++)c[a[i]]=a[i];for(i=1;i<=n;i++) if (!(b[i] in c)) printf "%s ",b[i];}'))
+	requires="$(find_requires ${requires[@]})"
+	awk -v p="$pkg" -v r="$requires" 'BEGIN{m=split(p,a," ");n=split(r,b," ");for(i=1;i<=n;i++)c[b[i]]=b[i];for(i=1;i<=m;i++) if (!(a[i] in c)) printf "%s ",a[i];}'
+}
+
+function run_list()
+{
+	local missed
+	local items=()
+	local item
+	case "$OPTION" in
+		(installed)	list_items $(awk 'NR>1{printf "%s ",$1}' $INSTALLED_DB);return;;
+		(updates)	list_items $(awk -F"|" '{printf "%s ",$1}' $UPDATE_DB);return;;
+	esac
+	for item in ${PARAMS[@]}; do
+		[ $(grep -E "^$item|" $SETUP_DB|wc -l) -ne 0 ] && items=(${items[@]} $item) || missed="$missed'$item' " 
+	done;
+	[ ${#items[@]} -ne 0 ] && list_items ${items[@]}
+	[ "$missed" != "" ] && prompt_echo "Package(s):${missed}not found!"
+}
+
+function run_info()
+{
+	local missed
+	local items=()
+	local item
+	case "$OPTION" in
+		(installed)	info_items $(awk 'NR>1{printf "%s ",$1}' $INSTALLED_DB);return;;
+		(updates)	info_items $(awk -F"|" '{printf "%s ",$1}' $UPDATE_DB);return;;
+	esac
+	for item in ${PARAMS[@]}; do
+		[ $(grep -E "^$item|" $SETUP_DB|wc -l) -ne 0 ] && items=(${items[@]} $item) || missed="$missed'$item' " 
+	done;
+	[ ${#items[@]} -ne 0 ] && info_items ${items[@]}
+	[ "$missed" != "" ] && prompt_echo "Package(s):${missed}Not Found!"
+}
+
+function remove_orphans()
+{
+	local orphans=($@)
+	local item=""
+	if [ ${#orphans[@]} -ne 0 ]; then
+		prompt_echo "Found ${#orphans[@]} Orphan Package(s)!"
+		item="[${orphans[@]}]"
+		[ $YES -eq 0 ] && [ "$COMMAND" != "update" ] && yes_or_no "Are you want to remove the orphan package(s) $item(y/N)?" "N" 30 && return 1
+		YES=1
+		for item in ${orphans[@]}; do 
+			remove_item "$item"
+			echo "Orphan Package(s) '$item' Removed!"
+		done
+	fi
+}
+
+function remove_item()
+{
+    local dir_ifs=$IFS
+	local pkg="$1"
+	local line
+	[ ! -e "/etc/setup/$pkg.lst.gz" ] && prompt_echo "Package Manifest Not Found, Cannot Remove $pkg." && return 1
+	prompt_echo "Removing Package '$pkg'..."
+	if [ -e "/etc/preremove/$pkg.sh" ]; then
+		sh "/etc/preremove/$pkg.sh"
+		rm -f "/etc/preremove/$pkg.sh"
+	fi
+	IFS=$'\n'
+	for line in $(gzip -dc "/etc/setup/$pkg.lst.gz" | awk '!/\/$/{print}'); do	rm -f "/$line";	done
+	for line in $(gzip -dc "/etc/setup/$pkg.lst.gz" | awk '/\/$/{n=split($0,a,"/");t[n]=t[n]"|"$0}END{n=asorti(t,a);for(i=n;i>0;i--){m=split(t[a[i]],b,"|");for(j=1;j<=m;j++) if (b[j]!="") print b[j]}}');do
+		[ $(find "/$line" -maxdepth 1|wc -l) -eq 1 ] && rm -rf "/$line" && prompt_echo "Empty Folder /$line Deleted!"
+	done 
+	IFS="$dir_ifs"
+	rm -f "/etc/setup/$pkg.lst.gz"
+	rm -f /etc/postinstall/$pkg.sh.done
+	cp -f $INSTALLED_DB "$INSTALLED_DB-save"
+	grep -v -E "^$pkg " "$INSTALLED_DB-save" > $INSTALLED_DB 
+}
+
+function remove_items()
+{
+	local pkg=""
+	local orphans=()
+	[ $YES -eq 0 ] && [ "$COMMAND" != "update" ] && yes_or_no "Are you sure to remove package '${@/# /}'(y/N)?" "N" 30 && return 1
+	for pkg in $@; do 
+		remove_item "$pkg" && prompt_echo "Package $pkg removed!"	
+		echo
+		prompt_echo "Checking Orphan Packages..."
+		orphans=("${orphans[@]}" "$(find_orphans $pkg)")
+	done
+	orphans=($(echo "${orphans[@]}"|awk '{for(i=1;i<=NF;i++) if (!($i in a)) {a[$i]=$i;printf "%s ",$i}}'))
+	remove_orphans ${orphans[@]}
+}
+
+function run_remove()
+{
+	local missed
+	local items=()
+	local item
+	local reqs
+	for item in ${PARAMS[@]}; do
+		if [ $(grep -E "^$item " $INSTALLED_DB|wc -l) -ne 0 ]; then
+			reqs="$(find_required_by $item)"
+			reqs=${reqs/% /}
+			[ "$reqs" != "" ] && prompt_echo "Package '$item' is Required by [$reqs]!" || items=(${items[@]} $item)
+		else
+			missed="$missed'$item' " 
+		fi
+	done;
+	[ "$missed" != "" ] && prompt_echo "Package(s):${missed}Not Installed!"
+	[ ${#items[@]} -ne 0 ] && remove_items "${items[@]}"
+}
+
+function install_item()
+{
+    local dir_ifs=$IFS
+    local pkg="$1"
+	local url="$(awk -F"|" -v t="$pkg" '{if($1==t){print $7;exit}}' $SETUP_DB)"
+	local md5_r="$(awk -F"|" -v t="$pkg" '{if($1==t){print $9;exit}}' $SETUP_DB)"
+	local md5_l
+	local opt
+	local file_name="$(basename $url)"
+	prompt_echo "Downloading Package '$pkg'..."
+	curl -# -o $CACHE_DIR/$file_name $MIRROR/$url || error_exit "Downloading Error in Installing Package of '$pkg'!"
+	md5_l="$(md5sum $CACHE_DIR/$file_name|awk '{print $1}')"
+	[ "$md5_l" != "$md5_r" ] && error_exit "MD5 Checking Error in Installing Package of '$pkg'!"
+	[[ $file_name =~ .bz2 ]] && opt="-xvjf"
+	[[ $file_name =~ .xz ]] && opt="-xvJf"
+	tar $opt $CACHE_DIR/$file_name -C / >/etc/setup/$pkg.lst
+	gzip -f "/etc/setup/$pkg.lst" 
+	rm -f $CACHE_DIR/$file_name
+	[[ $file_name =~ .xz ]] && file_name=${file_name/%.xz}".bz2"
+	cp -f "$INSTALLED_DB" "$INSTALLED_DB-save"
+	awk -v p="$pkg" -v f="$file_name" '{if (p!="" && p<$1) {print p" "f" 0"; p=""};print}END{if (p!="") print p" "f" 0"}' "$INSTALLED_DB-save">"$INSTALLED_DB"
+	IFS=$'\n'
+	for file_name in /etc/postinstall/*.sh; do
+		if [ "$file_name" != "/etc/postinstall/*.sh" ]; then
+			prompt_echo "Running Script '$(basename $file_name)' of Package '$pkg'..."
+			$file_name
+			cat $file_name>$file_name.done
+			rm -f $file_name
+		fi
+	done
+	IFS="$dir_ifs"
+}
+
+function install_items()
+{
+	local pkgs=($@)
+	local pkg
+	prompt_echo "Found ${#pkgs[@]} Package(s) Ready for Installation!"
+	[ $YES -eq 0 ] && [ "$COMMAND" != "update" ] && yes_or_no "Are you sure to install the package(s)(y/N)?" "N" 30 && return 1
+	YES=1
+	for pkg in ${pkgs[@]}; do 
+		install_item "$pkg" && prompt_echo "Package $pkg Installed!"	
+		echo
+	done
+}
+
+
+function run_install()
+{
+	local missed
+	local installed
+	local installing=()
+	local items=()
+	local item
+	local requires=()
+	for item in ${PARAMS[@]}; do
+		[ $(grep -E "^$item " $INSTALLED_DB|wc -l) -ne 0 ] && installed="$installed'$item' " || items=(${items[@]} $item) 
+	done;
+	prompt_echo "Checking Required Packages..."
+	for item in ${items[@]}; do
+		if [ $(grep -E "^$item\|" $SETUP_DB|wc -l) -ne 0 ]; then
+			installing=(${installing[@]} $item) 
+			requires=(${requires[@]} $(find_orphans $item))
+		else
+			missed="$missed'$item' " 	
+		fi
+	done
+	requires=($(echo "${requires[@]}"|awk '{for(i=1;i<=NF;i++) if (!($i in a)) {a[$i]=$i;printf "%s ",$i}}'))
+	item=" ${requires[@]} "
+	requires=($(awk -v t="$item" 'NR>1{gsub(" "$1" "," ",t)}END{print t}' $INSTALLED_DB)) 
+	installing=(${requires[@]} ${installing[@]})
+	[ "$installed" != "" ] && prompt_echo "Package(s):${installed}Installed Already!"
+	[ "$missed" != "" ] && prompt_echo "Package(s):${missed}Not Found!"	
+	[ ${#installing[@]} -ne 0 ] && info_items ${installing[@]} && install_items ${installing[@]}
+}
+
+function run_search()
+{
+	local res=($(awk -F"|" -v k="${PARAMS[@]}" '{for (i=1;i<=NF;i++) if (match($i,k)) {printf "%s ",$1;break}}' $SETUP_DB))
+	[ ${#res[@]} -ne 0 ] && list_items ${res[@]} || prompt_echo "Not Found Anything Related [${PARAMS[@]}]!"
+}
+
+function run_update()
+{
+	local missed
+	local updates=()
+	local item
+	[ ${#PARAMS[@]} -eq 0 ] && PARAMS=($(find_updates))
+	for item in ${PARAMS[@]}; do
+		[ $(grep -E "^$item " $UPDATE_DB|wc -l) -ne 0 ] && updates=(${updates[@]} $item) || missed="$missed'$item' " 
+	done;
+	[ "$missed" != ""] && prompt_echo "Not Found Package(s) of $missed!"
+	[ ${#updates[@]} -eq 0 ] && error_exit "No Package Required Update!"
+	prompt_echo "Found ${#updates[@]} Package(s) Required Update!"	
+	for item in ${updates[@]}; do
+		remove_item $item
+		install_item $item
+		prompt_echo "Package '$item' Updated!"
+	done
+}
+
+function run_clean()
+{
+	refresh_setup_ini 1
+	refresh_setup_db 1
+	refresh_update_db 1
+}
+
+################################################################################ 
+# Function Name:   Script Main Loop                                             
+# History:         2012-Jun-06 Initial Edition                       RobinHoo  
+################################################################################
+CACHE_DIR="/etc/yum/cache"
+CACHE_CMD="$CACHE_DIR/commands"
+COMMANDS=(mkdir dirname basename curl bzip2 tar xz awk grep file md5sum find cat echo bash)
+check_commands "${COMMANDS[@]}"
+cache_commands "${COMMANDS[@]}"
+PATH="$CACHE_CMD:$PATH"
+BASE_DIR=$(cd "$(dirname "$0")" && pwd)
+PROGNAME=$(basename "$0")
+AUTHOR_MAIL="robin.hoo@hotmail.com"
+SETUP_INI="/etc/yum/setup.ini"
+INSTALLED_DB="/etc/setup/installed.db"
+UPDATE_DB="/etc/yum/cache/update.db"
+SETUP_DB="/etc/yum/cache/setup.db"
+SETUP_VER="$(grep -i 'setup-version:' "$SETUP_INI"|awk '{print $2}' 2>/dev/null)"
+LAST_VER="$SETUP_VER"
+SETUP_TIMESTAMP="$(grep -i 'setup-timestamp:' "$SETUP_INI"|awk '{print $2}'  2>/dev/null)"
+LAST_TIMESTAMP="$SETUP_TIMESTAMP"
+VERSION="1.0"
+MIRRORS=()
+MIRROR=""
+mkdir -p "$CACHE_DIR"
+PE="$(file -b "$(which file)"|awk '{print $1}')"
+ARCH="UNKNOWN"
+[ "$PE" == "PE32" ] && ARCH="x86"
+[ "$PE" == "PE32+" ] && ARCH="x86_64"
+[ "$ARCH" == "UNKOWN" ] && prompt_echo "$PROGRAM: Error - System Architecture is Unkown!" && help_usage
+OPTION=""
+PARAMS=()
+COMMAND=""
+COMMANDS=(check-update clean info install list remove search update full-cache)
+YES=0
+while [ $# -gt 0 ]
+do
+    case "$1" in
+	    (check-update)	check_command "check-update";;
+	    (full-cache)	check_command "full-cache";;
+	    (clean)			check_command "clean";;
+	    (info)			check_command "info";info_options "$2"; shift;[ "$OPTION" == "" ] && get_parameters "$@" && [ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
+	    (install)		check_command "install";install_options "$2";shift;get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
+	    (list)			check_command "list";list_options "$2";shift; [ "$OPTION" == "" ] && get_parameters "$@" && [ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]}&& continue;;
+	    (remove)		check_command "remove";shift;get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
+	    (search)		check_command "search";search_options "$2"; shift && get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
+	    (update)		check_command "update";shift;get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
+		(-y)			check_yes;;			
+		(-h)			help_usage;;
+		(--yes)			check_yes;;		
+	    (--help)		help_usage;;
+	    (*)				prompt_echo "$PROGNAME: error - unrecognized option or parameter '$1'!"; help_usage;;
+    esac
+    shift
+done
+[ "$COMMAND" == "" ] && prompt_echo "$PROGNAME: error - missing option or parameters!" && help_usage
+[ "$COMMAND" == "info" ] && [ ${#PARAMS[@]} -eq 0 ] && [ "$OPTION" == "" ] && prompt_echo "$PROGNAME: error - missing parameters for command 'info' !" && help_usage
+[ "$COMMAND" == "list" ] && [ ${#PARAMS[@]} -eq 0 ] && [ "$OPTION" == "" ] && prompt_echo "$PROGNAME: error - missing parameters for command 'list' !" && help_usage
+[ "$COMMAND" == "remove" ] && [ ${#PARAMS[@]} -eq 0 ] && prompt_echo "$PROGNAME: error - missing parameters for command 'remove' !" && help_usage
+[ "$COMMAND" == "install" ] && [ ${#PARAMS[@]} -eq 0 ] && prompt_echo "$PROGNAME: error - missing parameters for command 'install' !" && help_usage
+[ "$COMMAND" == "search" ] && [ ${#PARAMS[@]} -eq 0 ] && prompt_echo "$PROGNAME: error - missing parameters for command 'search' !" && help_usage
+[ "$COMMAND" == "search" ] && [ ${#PARAMS[@]} -gt 1 ] && prompt_echo "$PROGNAME: error - too many parameters for command 'search' !" && help_usage
+
+get_mirror_site
+refresh_setup_ini
+refresh_setup_db
+refresh_update_db
+case "$COMMAND" in
+	(check-update)	run_check_update;;
+	(clean)			run_clean;;
+	(info)			run_info;;
+	(install)		run_install;;
+	(list)			run_list;;
+	(remove)		run_remove;;
+	(search)		run_search;;
+	(update)		run_update;;
+	(full-cache)	run_full_cache;;
+esac
