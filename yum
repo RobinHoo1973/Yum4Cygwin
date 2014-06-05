@@ -5,10 +5,13 @@ function check_commands()
 {
 	local command
 	local ERR=0
+	local CODE=0
 	for command in $@; do
-		[ "$(which $command 2> /dev/null)" = "" ] && prompt_echo "$command is not available for $PROGNAME" 
+		which $command >/dev/null 2>&1
+		CODE=$?; ERR=$((ERR+CODE))
+		[ $CODE -ne 0 ] && prompt_echo "$command is not available for $PROGNAME" 
 	done
-	[ $ERR -gt 0 ] && exit 1
+	[ $ERR -ne 0 ] && exit 1
 }
 
 function cache_commands()
@@ -454,7 +457,7 @@ function run_remove()
 	[ ${#items[@]} -ne 0 ] && remove_items "${items[@]}"
 }
 
-function install_item()
+function download_item()
 {
     local dir_ifs=$IFS
     local pkg="$1"
@@ -465,13 +468,24 @@ function install_item()
 	local file_name="$(basename $url)"
 	prompt_echo "Downloading Package '$pkg'..."
 	curl -# -o $CACHE_DIR/$file_name $MIRROR/$url || error_exit "Downloading Error in Installing Package of '$pkg'!"
-	md5_l="$(md5sum $CACHE_DIR/$file_name|awk '{print $1}')"
+	md5_l="$(md5sum $DOWNLOAD_DIR/$file_name|awk '{print $1}')"
 	[ "$md5_l" != "$md5_r" ] && error_exit "MD5 Checking Error in Installing Package of '$pkg'!"
+}
+
+function install_item()
+{
+    local dir_ifs=$IFS
+    local pkg="$1"
+	local url="$(awk -F"|" -v t="$pkg" '{if($1==t){print $7;exit}}' $SETUP_DB)"
+	local md5_r="$(awk -F"|" -v t="$pkg" '{if($1==t){print $9;exit}}' $SETUP_DB)"
+	local md5_l
+	local opt
+	local file_name="$(basename $url)"
 	[[ $file_name =~ .bz2 ]] && opt="-xvjf"
 	[[ $file_name =~ .xz ]] && opt="-xvJf"
-	tar $opt $CACHE_DIR/$file_name -C / >/etc/setup/$pkg.lst
-	gzip -f "/etc/setup/$pkg.lst" 
-	rm -f $CACHE_DIR/$file_name
+	tar $opt $DOWNLOAD_DIR/$file_name -C / >/etc/setup/$pkg.lst || error_exit "tar error with error code $? while extracting $pkg!"
+	gzip -f "/etc/setup/$pkg.lst" || error_exit "gzip error with error code $? while compressing $pkg!"
+	rm -f $DOWNLOAD_DIR/$file_name
 	[[ $file_name =~ .xz ]] && file_name=${file_name/%.xz}".bz2"
 	cp -f "$INSTALLED_DB" "$INSTALLED_DB-save"
 	awk -v p="$pkg" -v f="$file_name" '{if (p!="" && p<$1) {print p" "f" 0"; p=""};print}END{if (p!="") print p" "f" 0"}' "$INSTALLED_DB-save">"$INSTALLED_DB"
@@ -494,6 +508,10 @@ function install_items()
 	prompt_echo "Found ${#pkgs[@]} Package(s) Ready for Installation!"
 	[ $YES -eq 0 ] && [ "$COMMAND" != "update" ] && yes_or_no "Are you sure to install the package(s)(y/N)?" "N" 30 && return 1
 	YES=1
+	for pkg in ${pkgs[@]}; do 
+		download_item "$pkg" && prompt_echo "Package $pkg Download!"	
+		echo
+	done
 	for pkg in ${pkgs[@]}; do 
 		install_item "$pkg" && prompt_echo "Package $pkg Installed!"	
 		echo
@@ -543,11 +561,14 @@ function run_update()
 	local item
 	[ ${#PARAMS[@]} -eq 0 ] && PARAMS=($(find_updates))
 	for item in ${PARAMS[@]}; do
-		[ $(grep -E "^$item " $UPDATE_DB|wc -l) -ne 0 ] && updates=(${updates[@]} $item) || missed="$missed'$item' " 
+		[ $(grep -E "^$item\|" $UPDATE_DB|wc -l) -ne 0 ] && updates=(${updates[@]} $item) || missed="$missed'$item' " 
 	done;
-	[ "$missed" != ""] && prompt_echo "Not Found Package(s) of $missed!"
+	[ "$missed" != "" ] && prompt_echo "Not Found Package(s) of $missed!"
 	[ ${#updates[@]} -eq 0 ] && error_exit "No Package Required Update!"
 	prompt_echo "Found ${#updates[@]} Package(s) Required Update!"	
+	for item in ${updates[@]}; do
+		download_item $item
+	done
 	for item in ${updates[@]}; do
 		remove_item $item
 		install_item $item
@@ -567,13 +588,14 @@ function run_clean()
 # History:         2012-Jun-06 Initial Edition                       RobinHoo  
 ################################################################################
 CACHE_DIR="/etc/yum/cache"
+DOWNLOAD_DIR="$CACHE_DIR/download"
 CACHE_CMD="$CACHE_DIR/commands"
 COMMANDS=(mkdir dirname basename curl bzip2 tar xz awk grep file md5sum find cat echo bash)
+PROGNAME=$(basename "$0")
 check_commands "${COMMANDS[@]}"
 cache_commands "${COMMANDS[@]}"
 PATH="$CACHE_CMD:$PATH"
 BASE_DIR=$(cd "$(dirname "$0")" && pwd)
-PROGNAME=$(basename "$0")
 AUTHOR_MAIL="robin.hoo@hotmail.com"
 SETUP_INI="/etc/yum/setup.ini"
 INSTALLED_DB="/etc/setup/installed.db"
@@ -586,7 +608,7 @@ LAST_TIMESTAMP="$SETUP_TIMESTAMP"
 VERSION="1.0"
 MIRRORS=()
 MIRROR=""
-mkdir -p "$CACHE_DIR"
+mkdir -p "$DOWNLOAD_DIR"
 PE="$(file -b "$(which file)"|awk '{print $1}')"
 ARCH="UNKNOWN"
 [ "$PE" == "PE32" ] && ARCH="x86"
