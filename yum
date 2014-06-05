@@ -574,6 +574,7 @@ function run_update()
 		install_item $item
 		prompt_echo "Package '$item' Updated!"
 	done
+	refresh_update_db 1
 }
 
 function run_clean()
