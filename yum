@@ -101,7 +101,7 @@ function get_mirror_site()
 {
 	curl -s -o $CACHE_DIR/mirrors.lst http://cygwin.com/mirrors.lst
 #	MIRRORS=($(curl -s http://cygwin.com/mirrors.html|grep -o -E 'href="([^"#]+)/cygwin/"' |awk -F"\"" '{print $2}'|grep -v "http://www.redhat.com/"|grep -v "rsync://"))
-	MIRROR="http://mirrors.163.com/cygwin/"
+	MIRROR="http://mirrors.neusoft.edu.cn/cygwin/"
 }
 
 function check_md5()
@@ -467,7 +467,7 @@ function download_item()
 	local opt
 	local file_name="$(basename $url)"
 	prompt_echo "Downloading Package '$pkg'..."
-	curl -# -o $CACHE_DIR/$file_name $MIRROR/$url || error_exit "Downloading Error in Installing Package of '$pkg'!"
+	curl -# -o $DOWNLOAD_DIR/$file_name $MIRROR/$url || error_exit "Downloading Error in Installing Package of '$pkg'!"
 	md5_l="$(md5sum $DOWNLOAD_DIR/$file_name|awk '{print $1}')"
 	[ "$md5_l" != "$md5_r" ] && error_exit "MD5 Checking Error in Installing Package of '$pkg'!"
 }
