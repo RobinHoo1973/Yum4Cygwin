@@ -25,6 +25,7 @@ Commands:
 
   remove [pkgs..]     Remove the installed package(s) given by user as well
                       as the orphan package(s) relatives.
+                      
 
   search key-word     Search the package database for any package(s) relevant
                       the given keyword.
@@ -33,6 +34,7 @@ Commands:
 
 Options:
   -y, --yes    Always say yes to queries
+  
   -h, --help   Show current help message of the script usages
 
 Please Report Script Bugs to robin.hoo@hotmail.com
