@@ -1,7 +1,7 @@
 # Yum4Cygwin
 Yum for Cygwin
 
-''''text
+
 YUM for cygwin is a shell script helping cygwin user to install/update/search
 packages of cygwin in the manners of similar to the yum functions of REDHAT.
 
@@ -36,4 +36,4 @@ Options:
   -h, --help   Show current help message of the script usages
 
 Please Report Script Bugs to robin.hoo@hotmail.com
-''''
+
