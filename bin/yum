@@ -401,14 +401,6 @@ function refresh_update_db()
 	awk 'NR==FNR && NR>1{gsub(".tar.bz2","",$2);p[$1]=substr($2,length($1)+2)}NR>FNR{FS="|";if ($1 in p && p[$1]!=$6) printf "%s|%s|%s\n",$1,p[$1],$6}' $INSTALLED_DB $SETUP_DB > $UPDATE_DB
 }
 
-function check_yes()
-{
-	[ $YES -eq 0 ] && YES=1 && return
-	prompt_echo "${TEXT_RED_BOLD_BKGRD_BLACK}$PROGNAME: error - duplicated switch '-y' found!${TEXT_BKGRD_RESET}"
-	help_usage;
-	exit 1	
-}
-
 function check_command()
 {
 	[ "$COMMAND" == "" ] && COMMAND=$1 && return
@@ -961,23 +953,34 @@ YES=0
 while [ $# -gt 0 ]
 do
     case "$1" in
-	    (check-update)	check_command "check-update";;
-	    (full-cache)	check_command "full-cache";;
-	    (clean)			check_command "clean";;
+	    (check-update)	check_command "check-update";shift;;
+	    (full-cache)	check_command "full-cache";shift;;
+	    (clean)			check_command "clean";shift;;
 	    (info)			check_command "info";info_options "$2"; shift;[ "$OPTION" == "" ] && get_parameters "$@" && [ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
 	    (reinstall)		check_command "reinstall";install_options "$2";shift;get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
 	    (install)		check_command "install";install_options "$2";shift;get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
 	    (list)			check_command "list";list_options "$2";shift; [ "$OPTION" == "" ] && get_parameters "$@" && [ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]}&& continue;;
 	    (remove)		check_command "remove";shift;get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
 	    (search)		check_command "search";search_options "$2"; shift && get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
-	    (update)		check_command "update";shift;get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
-		(-y)			check_yes;;			
+	    (update)		check_command "update";shift;get_parameters "$@";echo "$# $1 0YES=$YES";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
+		(-y)			if [ $YES -eq 0 ]; then
+							YES=1;shift
+						else
+							prompt_echo "${TEXT_RED_BOLD_BKGRD_BLACK}$PROGNAME: error - duplicated switch '-y/--yes' found!${TEXT_BKGRD_RESET}"
+							help_usage
+							exit 1
+						fi;;
 		(-h)			help_usage;;
-		(--yes)			check_yes;;		
+		(--yes)			if [ $YES -eq 0 ]; then
+							YES=1;shift
+						else
+							prompt_echo "${TEXT_RED_BOLD_BKGRD_BLACK}$PROGNAME: error - duplicated switch '-y/--yes' found!${TEXT_BKGRD_RESET}"
+							help_usage
+							exit 1
+						fi;;
 	    (--help)		help_usage;;
 	    (*)				prompt_echo "${TEXT_RED_BOLD_BKGRD_BLACK}$PROGNAME: error - unrecognized option or parameter ${TEXT_YELLOW_BOLD_BKGRD_BLACK}'$1'!${TEXT_BKGRD_RESET}"; help_usage;;
     esac
-    shift
 done
 [ "$COMMAND" == "" ] && prompt_echo "${TEXT_RED_BOLD_BKGRD_BLACK}$PROGNAME: error - missing option or parameters!${TEXT_BKGRD_RESET}" && help_usage
 [ "$COMMAND" == "info" ] && [ ${#PARAMS[@]} -eq 0 ] && [ "$OPTION" == "" ] && prompt_echo "$PROGNAME: error - missing parameters for command 'info' !" && help_usage
