@@ -959,7 +959,7 @@ do
 	    (list)			check_command "list";list_options "$2";shift; [ "$OPTION" == "" ] && get_parameters "$@" && [ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]}&& continue;;
 	    (remove)		check_command "remove";shift;get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
 	    (search)		check_command "search";search_options "$2"; shift && get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
-	    (update)		check_command "update";shift;get_parameters "$@";echo "$# $1 0YES=$YES";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
+	    (update)		check_command "update";shift;get_parameters "$@";[ ${#PARAMS[@]} -ne 0 ] && shift ${#PARAMS[@]} && continue;;
 		(-y)			if [ $YES -eq 0 ]; then
 							YES=1;shift
 						else
